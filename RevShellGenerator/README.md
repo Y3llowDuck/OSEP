@@ -1,5 +1,11 @@
 # RevShellGenerator
 
+## Demo
+
+![RevShellGenerator in action](demo.png)
+
+---
+
 A **polymorphic PowerShell reverse shell generator** that produces a unique, heavily obfuscated payload on every run — no two outputs look alike. Designed to mimic the obfuscation engine from [powershellforhackers.com/tools/revshell](https://powershellforhackers.com/tools/revshell).
 
 > ⚠️ **For authorized penetration testing only.** Use responsibly and only against systems you have explicit permission to test.
