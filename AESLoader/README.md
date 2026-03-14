@@ -239,9 +239,8 @@ This project is licensed under the GPL-3.0 License - see the [LICENSE](../LICENS
 
 ## ⭐ Acknowledgments
 
-- Created for the OffSec community
-- Inspired by the need for a quick, repeatable AV evasion workflow during PEN300 labs
-- Special thanks to all OSEP students grinding through the challenge labs!
+- Created with love, by DUck, to all PEN300 students.
+- Inspired by the need for a quick, repeatable, C# AV evasion loader for the PEN300 labs.
 
 ---
 
